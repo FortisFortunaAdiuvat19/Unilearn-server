@@ -59,6 +59,11 @@ app.get('/', (req, res) => {
 });
 
 // --- API Routes will be imported here in the next step ---
+// Route Middleware
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/courses', require('./routes/courses'));
+app.use('/api/enrollments', require('./routes/enrollments'));
+app.use('/api/chatrooms', require('./routes/chatrooms'));
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
