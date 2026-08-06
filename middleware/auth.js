@@ -1,4 +1,4 @@
-const admin = require('../config/firebase');
+const auth = require('../config/firebase');
 
 const verifyToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -10,7 +10,9 @@ const verifyToken = async (req, res, next) => {
   const token = authHeader.split(' ')[1];
 
   try {
-    const decodedToken = await admin.auth().verifyIdToken(token);
+    // We can now call verifyIdToken directly on the imported auth module
+    const decodedToken = await auth.verifyIdToken(token);
+    
     // Attach the verified Firebase user data to the request object
     req.user = {
       uid: decodedToken.uid,
