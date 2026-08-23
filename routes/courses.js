@@ -1,10 +1,36 @@
 const express = require('express');
 const router = express.Router();
 const verifyToken = require('../middleware/auth');
+const requireAdmin = require('../middleware/requireAdmin');
 const Course = require('../models/Course');
 const CourseDocument = require('../models/CourseDocument');
 const VideoResource = require('../models/VideoResource');
 const Assessment = require('../models/Assessment');
+
+// POST /api/courses
+// Admin-only. Previously there was no way to create a course at all —
+// the catalog had to be inserted into MongoDB by hand.
+router.post('/', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const {
+      title, course_code, description, long_description, category,
+      level, semester, difficulty, image_url, instructor_name,
+      instructor_bio, duration_hours, modules, outcomes, tags, is_featured
+    } = req.body;
+
+    const course = new Course({
+      title, course_code, description, long_description, category,
+      level, semester, difficulty, image_url, instructor_name,
+      instructor_bio, duration_hours, modules, outcomes, tags, is_featured,
+      created_by_id: req.user.uid
+    });
+
+    await course.save();
+    res.status(201).json(course);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
 
 // GET /api/courses
 router.get('/', async (req, res) => {
