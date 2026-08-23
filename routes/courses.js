@@ -7,6 +7,70 @@ const CourseDocument = require('../models/CourseDocument');
 const VideoResource = require('../models/VideoResource');
 const Assessment = require('../models/Assessment');
 const Enrollment = require('../models/Enrollment');
+const gemini = require('../config/gemini');
+
+// Overridable via env in case you want to try a newer/cheaper model later
+// without touching code.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+
+// We deliberately never ask Gemini for direct YouTube video URLs — a
+// language model has no reliable way to know a specific video ID actually
+// exists, and a confident-looking dead link is worse than none. Instead we
+// ask for good search topics and build a real YouTube search URL, which
+// always resolves to something relevant and never 404s.
+const YOUTUBE_SEARCH_BASE = 'https://www.youtube.com/results?search_query=';
+
+const CONTENT_SCHEMA = {
+  type: 'object',
+  properties: {
+    documents: {
+      type: 'array',
+      description: 'Two or three short study notes, each covering a distinct part of the course.',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          topic: { type: 'string', description: 'The specific sub-topic this note covers.' },
+          content: { type: 'string', description: 'The note itself, 200-500 words, in markdown.' },
+        },
+        required: ['title', 'topic', 'content'],
+      },
+    },
+    video_topics: {
+      type: 'array',
+      description: 'Three or four specific topics within the course worth watching a video on.',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'A short, specific topic name, suitable as a YouTube search query.' },
+          description: { type: 'string' },
+        },
+        required: ['title', 'description'],
+      },
+    },
+    assessment: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        objective_questions: {
+          type: 'array',
+          description: 'Five to eight multiple-choice questions, each with exactly 4 options.',
+          items: {
+            type: 'object',
+            properties: {
+              question: { type: 'string' },
+              options: { type: 'array', items: { type: 'string' } },
+              correct_index: { type: 'integer', description: '0-based index into options of the correct answer.' },
+            },
+            required: ['question', 'options', 'correct_index'],
+          },
+        },
+      },
+      required: ['title', 'objective_questions'],
+    },
+  },
+  required: ['documents', 'video_topics', 'assessment'],
+};
 
 // POST /api/courses
 // Admin-only. Previously there was no way to create a course at all —
@@ -143,16 +207,88 @@ router.get('/:id/assessments', async (req, res) => {
 });
 
 // POST /api/courses/:id/generate-content
-// Protected route for AI generation
-router.post('/:id/generate-content', verifyToken, async (req, res) => {
+// Admin-only. Asks Gemini for study notes, video search topics, and a
+// practice test scoped to this course, then saves the results into
+// CourseDocument, VideoResource, and Assessment. Each run adds a new batch
+// on top of whatever's already there — it doesn't replace prior content.
+router.post('/:id/generate-content', verifyToken, requireAdmin, async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({
+      message: 'Content generation is not configured. Add GEMINI_API_KEY to the server environment.'
+    });
+  }
+
   try {
-    // TODO: Initialize Google Generative AI (Gemini) SDK here.
-    // Fetch course details, pass them as a prompt to Gemini, and save the 
-    // returned JSON into CourseDocument, VideoResource, and Assessment collections.
-    
-    res.status(200).json({ message: 'Content generation initiated successfully.' });
+    const course = await Course.findById(req.params.id);
+    if (!course) return res.status(404).json({ message: 'Course not found' });
+
+    const moduleList = (course.modules || []).map((m) => `- ${m.title}`).join('\n') || '(no modules listed yet)';
+    const prompt = `You are helping build the study guide for a university course.
+
+Course: ${course.title} (${course.course_code})
+Category: ${course.category}, Level ${course.level}
+Description: ${course.description || course.long_description || 'N/A'}
+Existing modules:
+${moduleList}
+
+Generate supporting study material scoped to this course: a few short study
+notes, a few specific video-worthy topics, and one short multiple-choice
+practice test.`;
+
+    const response = await gemini.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: CONTENT_SCHEMA,
+      },
+    });
+
+    const parsed = JSON.parse(response.text);
+
+    const documents = await CourseDocument.insertMany(
+      (parsed.documents || []).map((d) => ({
+        course_id: course._id,
+        title: d.title,
+        topic: d.topic,
+        content: d.content,
+        source_type: 'generated',
+      }))
+    );
+
+    const videos = await VideoResource.insertMany(
+      (parsed.video_topics || []).map((v) => ({
+        course_id: course._id,
+        title: v.title,
+        description: v.description,
+        url: `${YOUTUBE_SEARCH_BASE}${encodeURIComponent(`${v.title} ${course.title}`)}`,
+      }))
+    );
+
+    let assessment = null;
+    if (parsed.assessment?.objective_questions?.length) {
+      assessment = await Assessment.create({
+        course_id: course._id,
+        title: parsed.assessment.title || `${course.title} — Practice Test`,
+        type: 'test',
+        objective_questions: parsed.assessment.objective_questions.map((q) => ({
+          question: q.question,
+          options: q.options,
+          correct_option: q.correct_index,
+        })),
+        theory_questions: [],
+      });
+    }
+
+    res.status(200).json({
+      message: 'Content generated successfully.',
+      documents_created: documents.length,
+      videos_created: videos.length,
+      assessment_created: !!assessment,
+    });
   } catch (error) {
-    res.status(500).json({ message: 'Failed to generate content' });
+    console.error('Content generation error:', error);
+    res.status(500).json({ message: 'Failed to generate content: ' + error.message });
   }
 });
 
