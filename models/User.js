@@ -9,7 +9,12 @@ const userSchema = new mongoose.Schema({
     default: 'user',
     required: true 
   },
-  // You can add other fields here later (name, email) populated from Firebase
+  // Populated from the Firebase token at sync time (see routes/auth.js).
+  // Needed anywhere we have to show one user's identity to another user —
+  // e.g. a tutor's name in a tutor listing — since nothing else in this
+  // app stores that server-side.
+  name: { type: String, default: '' },
+  email: { type: String, default: '' },
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);
