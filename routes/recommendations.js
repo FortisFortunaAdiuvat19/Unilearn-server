@@ -5,6 +5,7 @@ const Result = require('../models/Result');
 const Assessment = require('../models/Assessment');
 const Course = require('../models/Course');
 const VideoResource = require('../models/VideoResource');
+const { getRankedTutors } = require('./tutors');
 
 // Below this objective score (%), an assessment gets flagged with
 // improvement suggestions. Should match IMPROVEMENT_THRESHOLD in
@@ -40,11 +41,13 @@ router.get('/', verifyToken, async (req, res) => {
 
     const recommendations = await Promise.all(
       weakResults.map(async (result) => {
-        const [assessment, course, video] = await Promise.all([
+        const [assessment, course, video, tutors] = await Promise.all([
           Assessment.findById(result.assessment_id),
           Course.findById(result.course_id),
           VideoResource.findOne({ course_id: result.course_id }),
+          getRankedTutors(result.course_id),
         ]);
+        const topTutor = tutors[0];
 
         const suggested_actions = [
           {
@@ -64,11 +67,24 @@ router.get('/', verifyToken, async (req, res) => {
           });
         }
 
-        suggested_actions.push({
-          type: 'join_study_group',
-          label: `Find classmates studying ${course?.title || 'this course'}`,
-          href: '/community',
-        });
+        // A specific, ranked tutor when one is qualified and available for
+        // this course; otherwise a generic pointer to Community — never
+        // both, so the suggestion doesn't feel padded.
+        if (topTutor) {
+          suggested_actions.push({
+            type: 'connect_tutor',
+            label: `Connect with ${topTutor.name} (${topTutor.overall_rating}★ match)`,
+            href: `/course/${result.course_id}`,
+            tutor_id: topTutor.tutor_id,
+            course_id: result.course_id,
+          });
+        } else {
+          suggested_actions.push({
+            type: 'join_study_group',
+            label: `Find classmates studying ${course?.title || 'this course'}`,
+            href: '/community',
+          });
+        }
 
         return {
           course_id: result.course_id,
