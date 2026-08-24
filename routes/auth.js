@@ -6,17 +6,19 @@ const User = require('../models/User');
 // POST /api/auth/sync
 router.post('/sync', verifyToken, async (req, res) => {
   try {
-    // Check if the user already exists in MongoDB
-    let user = await User.findById(req.user.uid);
+    // Falls back to the email's local part when Firebase has no display
+    // name set (common for email/password sign-ups) — same fallback the
+    // client already uses when it has to show a name.
+    const displayName = req.user.name || (req.user.email ? req.user.email.split('@')[0] : 'User');
 
-    if (!user) {
-      // If not, create a new user record using their Firebase UID
-      user = new User({
-        _id: req.user.uid,
-        role: 'user'
-      });
-      await user.save();
-    }
+    const user = await User.findByIdAndUpdate(
+      req.user.uid,
+      {
+        $set: { name: displayName, email: req.user.email || '' },
+        $setOnInsert: { _id: req.user.uid, role: 'user' },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
 
     res.status(200).json({ user });
   } catch (error) {
