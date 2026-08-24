@@ -65,6 +65,7 @@ app.use('/api/courses', require('./routes/courses'));
 app.use('/api/enrollments', require('./routes/enrollments'));
 app.use('/api/chatrooms', require('./routes/chatrooms'));
 app.use('/api/assessments', require('./routes/assessments'));
+app.use('/api/recommendations', require('./routes/recommendations'));
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
