@@ -13,20 +13,39 @@ connectDB();
 const app = express();
 const server = http.createServer(app);
 
+// FRONTEND_URL can be a single origin or a comma-separated list (prod domain,
+// a preview domain, localhost for local dev, etc). A mismatch here — wrong
+// value, http vs https, a trailing slash — silently blocks every request
+// from the frontend with a CORS error, which from the client looks
+// indistinguishable from an auth failure.
+const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
+  .split(',')
+  .map((url) => url.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // No Origin header = server-to-server / curl / health checks — allow.
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`Not allowed by CORS: ${origin}`));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  credentials: true
+};
+
 // Middleware
 app.use(helmet());
 app.use(morgan('dev'));
 app.use(express.json());
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  credentials: true
-}));
+app.use(cors(corsOptions));
 
 // Initialize Socket.io
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: allowedOrigins,
     methods: ['GET', 'POST']
   }
 });
