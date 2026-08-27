@@ -17,7 +17,7 @@ const verifyToken = async (req, res, next) => {
     req.user = {
       uid: decodedToken.uid,
       email: decodedToken.email,
-      name: decodedToken.name || decodedToken.email.split('@')[0]
+      name: decodedToken.name || (decodedToken.email ? decodedToken.email.split('@')[0] : 'User')
     };
     next();
   } catch (error) {
