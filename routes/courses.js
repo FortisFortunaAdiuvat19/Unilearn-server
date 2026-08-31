@@ -72,6 +72,27 @@ const CONTENT_SCHEMA = {
   required: ['documents', 'video_topics', 'assessment'],
 };
 
+const MODULES_SCHEMA = {
+  type: 'object',
+  properties: {
+    modules: {
+      type: 'array',
+      description: 'A sequence of 5 to 10 learning modules a student would work through in order, foundational first, to learn this course.',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          description: { type: 'string', description: 'What this module covers, 1-2 sentences.' },
+          duration_minutes: { type: 'integer', description: 'A reasonable estimated time to complete this module, in minutes.' },
+          content_type: { type: 'string', enum: ['video', 'text', 'quiz', 'exercise'] },
+        },
+        required: ['title', 'description', 'duration_minutes', 'content_type'],
+      },
+    },
+  },
+  required: ['modules'],
+};
+
 // POST /api/courses
 // Admin-only. Previously there was no way to create a course at all —
 // the catalog had to be inserted into MongoDB by hand.
@@ -94,6 +115,62 @@ router.post('/', verifyToken, requireAdmin, async (req, res) => {
     res.status(201).json(course);
   } catch (error) {
     res.status(400).json({ message: error.message });
+  }
+});
+
+// POST /api/courses/generate-modules
+// Admin-only. Deliberately takes course details directly in the body
+// rather than a course ID — unlike the other generator, this needs to
+// work while a course is still being created, before it has an ID, not
+// just while editing an existing one. Returns the generated modules for
+// the client to add to its own form state; nothing is saved here, so
+// there's no risk of this silently overwriting a course's existing
+// modules — the admin reviews and explicitly saves (or doesn't).
+router.post('/generate-modules', verifyToken, requireAdmin, async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({
+      message: 'Content generation is not configured. Add GEMINI_API_KEY to the server environment.'
+    });
+  }
+
+  const { title, description, category, level } = req.body;
+  if (!title || !title.trim()) {
+    return res.status(400).json({ message: 'A course title is required to generate modules.' });
+  }
+
+  try {
+    const prompt = `You are designing the learning path for a university course.
+
+Course: ${title}
+Category: ${category || 'N/A'}, Level ${level || 'N/A'}
+Description: ${description || 'N/A'}
+
+Break this course down into a sequence of learning modules a student would
+work through in order, from foundational to more advanced. Each module
+should be a focused, coherent chunk of the course — not too broad, not too
+narrow.`;
+
+    const response = await gemini.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: MODULES_SCHEMA,
+      },
+    });
+
+    const parsed = JSON.parse(response.text);
+    const modules = (parsed.modules || []).map((m) => ({
+      title: m.title,
+      description: m.description,
+      duration_minutes: m.duration_minutes,
+      content_type: m.content_type,
+    }));
+
+    res.status(200).json({ modules });
+  } catch (error) {
+    console.error('Module generation error:', error);
+    res.status(500).json({ message: 'Failed to generate modules: ' + error.message });
   }
 });
 
