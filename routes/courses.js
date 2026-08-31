@@ -197,6 +197,28 @@ router.get('/:id/videos', async (req, res) => {
   }
 });
 
+// POST /api/courses/:id/videos
+// Admin-only. Previously the only way a VideoResource got created was the
+// Gemini generator's bulk insert — no manual "add this specific video" path.
+router.post('/:id/videos', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const { title, url, description, duration_minutes } = req.body;
+    if (!title || !url) {
+      return res.status(400).json({ message: 'Title and URL are required.' });
+    }
+    const video = await VideoResource.create({
+      course_id: req.params.id,
+      title,
+      url,
+      description: description || '',
+      duration_minutes: duration_minutes || undefined,
+    });
+    res.status(201).json(video);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
 router.get('/:id/assessments', async (req, res) => {
   try {
     const assessments = await Assessment.find({ course_id: req.params.id });
