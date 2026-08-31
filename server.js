@@ -86,6 +86,7 @@ app.use('/api/chatrooms', require('./routes/chatrooms'));
 app.use('/api/assessments', require('./routes/assessments'));
 app.use('/api/recommendations', require('./routes/recommendations'));
 app.use('/api/tutors', require('./routes/tutors'));
+app.use('/api/youtube', require('./routes/youtube'));
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
