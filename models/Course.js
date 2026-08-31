@@ -23,6 +23,14 @@ const courseSchema = new mongoose.Schema({
     duration_minutes: Number,
     content_type: { type: String, enum: ['video', 'text', 'quiz', 'exercise'] }
   }],
+  // A week-by-week teaching schedule, distinct from `modules` above —
+  // shown as a reference table, not something a student progresses
+  // through or marks complete.
+  scheme_of_work: [{
+    week: { type: String, required: true },
+    topic: { type: String, required: true },
+    details: { type: String, default: '' }
+  }],
   outcomes: [String],
   tags: [String],
   enrollment_count: { type: Number, default: 0 },
