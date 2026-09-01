@@ -6,6 +6,9 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const { Server } = require('socket.io');
 const connectDB = require('./config/db');
+const firebaseAuth = require('./config/firebase');
+const ChatRoom = require('./models/ChatRoom');
+const { canAccessRoom } = require('./routes/chatrooms');
 
 // Connect to MongoDB
 connectDB();
@@ -50,13 +53,38 @@ const io = new Server(server, {
   }
 });
 
+// Socket.io connections previously had no identity check at all — anyone
+// could connect and join any room by ID with no token, bypassing whatever
+// access control the REST endpoints enforced. This verifies the same
+// Firebase ID token the REST API uses, during the handshake.
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('Unauthorized: No token provided'));
+    const decoded = await firebaseAuth.verifyIdToken(token);
+    socket.userId = decoded.uid;
+    next();
+  } catch (error) {
+    next(new Error('Unauthorized: Invalid or expired token'));
+  }
+});
+
 // Socket.io Connection Logic
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log(`User connected: ${socket.id} (${socket.userId})`);
 
-  socket.on('joinRoom', (roomId) => {
-    socket.join(roomId);
-    console.log(`User ${socket.id} joined room ${roomId}`);
+  socket.on('joinRoom', async (roomId) => {
+    try {
+      const room = await ChatRoom.findById(roomId);
+      if (!room || !canAccessRoom(room, socket.userId)) {
+        socket.emit('roomAccessDenied', roomId);
+        return;
+      }
+      socket.join(roomId);
+      console.log(`User ${socket.id} joined room ${roomId}`);
+    } catch (error) {
+      socket.emit('roomAccessDenied', roomId);
+    }
   });
 
   socket.on('leaveRoom', (roomId) => {
