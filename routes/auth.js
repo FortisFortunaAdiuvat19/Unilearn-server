@@ -50,7 +50,12 @@ router.post('/sync', verifyToken, async (req, res) => {
     // matric_number is only ever sent by the registration flow, on first
     // sync — a normal login sync never includes it, so this never
     // accidentally overwrites an already-set value.
-    if (req.body.matric_number) {
+    // Optional chaining is deliberate here, not defensive habit: a normal
+    // login sync (checkUserAuth/refreshUser on the client) sends this
+    // request with no body at all, which leaves req.body itself as
+    // undefined rather than {} — req.body.matric_number would throw in
+    // that case instead of safely evaluating to undefined.
+    if (req.body?.matric_number) {
       if (!MATRIC_NUMBER_PATTERN.test(req.body.matric_number)) {
         return res.status(400).json({
           message: 'Matriculation number must be exactly 11 digits — 4-digit registration year followed by 7 digits, e.g. 20211263825.'
