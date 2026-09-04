@@ -109,6 +109,7 @@ app.get('/', (req, res) => {
 // Route Middleware
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/courses', require('./routes/courses'));
+app.use('/api/courses/:courseId/modules', require('./routes/modules'));
 app.use('/api/enrollments', require('./routes/enrollments'));
 app.use('/api/chatrooms', require('./routes/chatrooms'));
 app.use('/api/assessments', require('./routes/assessments'));
