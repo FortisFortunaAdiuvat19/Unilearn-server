@@ -3,6 +3,83 @@ const CourseDocument = require('../models/CourseDocument');
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Google's 429 responses carry a RetryInfo.retryDelay telling the client
+// exactly how long to wait -- e.g. {"error": {"code": 429, "details": [
+// {"@type": ".../RetryInfo", "retryDelay": "15.002899939s"}]}}. The
+// @google/genai SDK's exact error shape isn't consistently documented,
+// and in practice the useful detail sometimes ends up inside `.message`
+// as a still-JSON-encoded string rather than a parsed object, so this
+// tries several places rather than assuming one fixed shape.
+function parseGeminiError(error) {
+  let status = error?.status ?? error?.code ?? error?.response?.status ?? null;
+  let retryDelaySeconds = null;
+
+  const scan = (obj) => {
+    if (!obj || typeof obj !== 'object') return;
+    const inner = obj.error || obj;
+    if (inner?.code && !status) status = inner.code;
+    for (const d of inner?.details || []) {
+      const match = typeof d?.retryDelay === 'string' && d.retryDelay.match(/([\d.]+)s/);
+      if (match) retryDelaySeconds = parseFloat(match[1]);
+    }
+  };
+
+  scan(error);
+  if (typeof error?.message === 'string') {
+    try {
+      scan(JSON.parse(error.message));
+    } catch {
+      // Not a JSON-encoded message -- fall back to a plain-text signal.
+      if (!status && /RESOURCE_EXHAUSTED|429|quota/i.test(error.message)) status = 429;
+    }
+  }
+
+  return { status: Number(status) || null, retryDelaySeconds };
+}
+
+const RETRYABLE_STATUSES = new Set([429, 500, 503, 504]);
+// A retryDelay longer than this most likely reflects a daily/long-term
+// quota rather than a short per-minute one -- waiting that long inside a
+// single run would make the script look hung with no useful feedback.
+// Treated as non-retryable here so the module fails clearly instead,
+// leaving it for a later run (a fresh day, or after enabling billing)
+// rather than an open-ended silent wait.
+const MAX_SENSIBLE_RETRY_DELAY_SECONDS = 120;
+
+async function callGeminiWithRetry(params, { maxAttempts = 5, label = 'Gemini call' } = {}) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await gemini.models.generateContent(params);
+    } catch (error) {
+      const { status, retryDelaySeconds } = parseGeminiError(error);
+      const isLastAttempt = attempt === maxAttempts;
+      const tooLongToWait = retryDelaySeconds !== null && retryDelaySeconds > MAX_SENSIBLE_RETRY_DELAY_SECONDS;
+
+      if (!RETRYABLE_STATUSES.has(status) || isLastAttempt || tooLongToWait) {
+        if (status === 429 && tooLongToWait) {
+          throw new Error(
+            `Rate limited (429) and the API's suggested wait (${retryDelaySeconds}s) looks like a longer-term ` +
+            `quota, not a short per-minute one. Not waiting that long inside this run -- try again later, or on a ` +
+            `fresh day if this is the daily limit.`
+          );
+        }
+        if (status === 429) {
+          throw new Error(`Rate limited (429) on ${label} after ${attempt} attempt(s): ${error.message}`);
+        }
+        throw error;
+      }
+
+      // Respect the API's own guidance when it gives one; otherwise fall
+      // back to exponential backoff with jitter, capped at 30s.
+      const waitSeconds = retryDelaySeconds ?? Math.min(2 ** attempt + Math.random() * 2, 30);
+      console.log(`  ${label}: hit ${status}, waiting ${waitSeconds.toFixed(1)}s before retry (attempt ${attempt}/${maxAttempts})...`);
+      await sleep(waitSeconds * 1000);
+    }
+  }
+}
+
 // Structuring the researched narrative into cards. Deliberately no
 // `tools` here — the Gemini API doesn't support combining search
 // grounding with structured-output/schema constraints in the same call,
@@ -75,7 +152,11 @@ async function findVideoForQuery(query) {
 // iterating over many at once — don't each re-fetch it.
 async function generateModuleCards(course, sow) {
   if (!process.env.GEMINI_API_KEY) {
-    throw new Error('GEMINI_API_KEY is not configured.');
+    throw new Error(
+      'GEMINI_API_KEY is not set in this environment. If it\'s already configured on Render for the ' +
+      'deployed app, that\'s a separate environment — add it to your local .env file too, since ' +
+      'scripts run on your own machine and read your local environment, not Render\'s.'
+    );
   }
 
   // Existing course documents are real source material, not just
@@ -96,11 +177,11 @@ ${docsContext}
 
 Research this topic using current, reputable sources and write a thorough, narrative explanation of it as if you are personally teaching a university student. Speak to the student directly, build the ideas up step by step, use concrete examples, and explain why the material matters, not just what it is. Write in flowing prose paragraphs — do not use bullet points or numbered lists. If the topic naturally splits into two to four distinct sub-parts, structure your explanation around each of them in turn with clear paragraph breaks between them. Write approximately 900-1400 words in total.`;
 
-  const researchResponse = await gemini.models.generateContent({
+  const researchResponse = await callGeminiWithRetry({
     model: GEMINI_MODEL,
     contents: researchPrompt,
     config: { tools: [{ googleSearch: {} }] },
-  });
+  }, { label: 'research call' });
 
   const narrative = researchResponse.text;
   if (!narrative) throw new Error('Research step returned no content.');
@@ -114,11 +195,18 @@ Research this topic using current, reputable sources and write a thorough, narra
   // request isn't supported by the API.
   const structurePrompt = `Below is a narrative teaching explanation of a university course topic:\n\n${narrative}\n\nSplit this into two to four self-contained info cards for a card-based learning app, following the instructions in the response schema. Preserve the original wording and teaching tone as closely as possible — distribute the actual text across the cards rather than summarizing it.`;
 
-  const structureResponse = await gemini.models.generateContent({
+  // A small proactive gap before the second call, on top of the reactive
+  // retry logic above -- at very low per-minute limits (free-tier limits
+  // were cut significantly across the board in December 2025), spacing
+  // calls out reduces how often a 429 gets hit in the first place, rather
+  // than relying entirely on catching and retrying after the fact.
+  await sleep(3000);
+
+  const structureResponse = await callGeminiWithRetry({
     model: GEMINI_MODEL,
     contents: structurePrompt,
     config: { responseMimeType: 'application/json', responseSchema: CARDS_SCHEMA },
-  });
+  }, { label: 'structuring call' });
 
   const parsed = JSON.parse(structureResponse.text);
   if (!parsed.cards?.length) throw new Error('Structuring step returned no cards.');
