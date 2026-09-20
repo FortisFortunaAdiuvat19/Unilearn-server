@@ -13,7 +13,11 @@ dns.setServers(['1.1.1.1', '8.8.8.8']);
 const connectDB = async () => {
   try {
     const conn = await mongoose.connect(process.env.MONGODB_URI);
-    console.log(`MongoDB Connected: ${conn.connection.host}`);
+    // Two environments can point at the same cluster but different
+    // database names within it (one explicit, one silently defaulting to
+    // "test" if the URI omits it) — logging the host alone wouldn't show
+    // that at all, since it looks identical either way.
+    console.log(`MongoDB Connected: ${conn.connection.host} / database: ${conn.connection.name}`);
   } catch (error) {
     console.error(`MongoDB Connection Error: ${error.message}`);
     process.exit(1);
